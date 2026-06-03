@@ -519,19 +519,18 @@ def run_pipeline():
                     s = str(val).strip()
                     if not s or s == '-': return 0
                     
-                    has_dot = '.' in s
+                    s_cleaned = s.replace('.', '')
+                    if ',' in s_cleaned:
+                        s_cleaned = s_cleaned.split(',')[0]
+                        
                     try:
-                        num = float(s.replace(',', '.'))
-                        if has_dot:
-                            return int(round(num * 1000))
-                        else:
-                            return int(num)
+                        return int(s_cleaned)
                     except:
                         return 0
 
                 for col in monetary_cols:
                     if col in df.columns:
-                        df[col] = df[col].apply(clean_shopee_monetary)
+                        df[col] = df[col].apply(clean_shopee_monetary).astype(int)
                 
                 # Calculate new metrics based on corrected raw values (keep decimals for Commission, Revenue, and OFD Fees)
                 commission_real = (df['Nilai Transaksi'] * 0.25).fillna(0)
