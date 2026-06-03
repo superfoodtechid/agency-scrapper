@@ -256,7 +256,7 @@ async def run_all(date_start: str = None, date_end: str = None, output_dir: str 
 
     xlsx_files = sorted(laporan_dir.glob("*.xlsx")) if laporan_dir.exists() else []
     # Exclude master file jika sudah ada dari run sebelumnya
-    xlsx_files = [f for f in xlsx_files if f.stem != "MASTER" and not f.stem.startswith("CUSTOM_") and not f.stem.startswith("BASELINE_CUSTOM_")]
+    xlsx_files = [f for f in xlsx_files if f.stem != "MASTER" and f.stem != "0Master" and not f.stem.startswith("0Master-") and not f.stem.startswith("MASTER-") and not f.stem.startswith("CUSTOM_") and not f.stem.startswith("BASELINE_CUSTOM_")]
     if outlet_filter or branch_filter:
         valid_stems = []
         for p_info in portals:
@@ -309,7 +309,7 @@ async def run_all(date_start: str = None, date_end: str = None, output_dir: str 
             master_df[col] = parsed.dt.strftime("%Y-%m-%d at %H:%M").where(parsed.notna(), other=master_df[col])
 
     # Simpan sebagai Excel Lokal (Pemisahan Penamaan Pelaporan)
-    filename_prefix = "MASTER"
+    filename_prefix = "0Master"
 
     master_xlsx = laporan_dir / f"{filename_prefix}.xlsx"
     version = 1

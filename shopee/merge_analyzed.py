@@ -7,7 +7,7 @@ def merge_analyzed_reports():
     report_dir = "data/reports/weekly"
     pattern = os.path.join(report_dir, "*.xlsx")
     all_files = glob.glob(pattern)
-    files = [f for f in all_files if not os.path.basename(f).startswith("Master_") and not os.path.basename(f).startswith("CUSTOM_") and not os.path.basename(f).startswith("Merged_")]
+    files = [f for f in all_files if not os.path.basename(f).startswith("Master_") and not os.path.basename(f).startswith("0Master_") and not os.path.basename(f).startswith("CUSTOM_") and not os.path.basename(f).startswith("Merged_")]
     
     if not files:
         print("❌ No analyzed files found in data/reports/weekly")
