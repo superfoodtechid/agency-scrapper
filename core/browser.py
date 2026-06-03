@@ -883,12 +883,11 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
 
     run_headless_now = headless
     login_needed = not session_valid
-    if login_needed and headless:
-        log.info("⚠️ [SESSION] No active session. Opening browser with interface (headed) for login & OTP...")
-        run_headless_now = False
 
     for attempt in range(3):
-        if login_needed and headless:
+        # We start with the configured headless mode to check if browser is already logged in
+        if attempt > 0:
+            # If attempt > 0, it means the first check failed and login/OTP is required, so we force headed
             run_headless_now = False
 
         log.info(f"🌐 [BROWSER] Launching (headless={run_headless_now}, attempt={attempt+1}/3)...")
@@ -936,6 +935,16 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
 
             # ── Step 3: Login if all above failed ──
             if not is_logged_in:
+                # If we are currently headless, but need login/OTP, relaunch headed!
+                if run_headless_now:
+                    log.info("⚠️ [SESSION] No active session. Opening browser with interface (headed) for login & OTP...")
+                    driver.quit()
+                    run_headless_now = False
+                    driver = _init_driver(headless=False)
+                    wait = WebDriverWait(driver, 30)
+                    driver.get(PARTNER_DASHBOARD)
+                    time.sleep(4)
+
                 log.info("⚠️ [SESSION] No active session. Navigating to login...")
                 if "/login" not in driver.current_url.lower() and "authenticate" not in driver.current_url.lower():
                     driver.get("https://partner.shopee.co.id/login")
@@ -1030,7 +1039,7 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
                     if bypass_success: time.sleep(2)
 
             # --- TRANSITION HEADED -> HEADLESS AFTER LOGIN ---
-            if login_needed and headless:
+            if login_needed and headless and not run_headless_now:
                 log.info("✅ Login successful. Saving session and transitioning to headless mode...")
                 t, eid = _trigger_and_extract_tokens(driver)
                 if not t:
