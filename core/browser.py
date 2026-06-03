@@ -873,9 +873,26 @@ def return_to_selector(driver) -> bool:
         return True
 
 def get_session(username=None, password=None, phone=None, headless=True, close_browser=True, target_name=None, interactive=True) -> dict | None:
+    # 1. Attempt to load from cached session first
+    saved = load_session()
+    session_valid = False
+    if saved:
+        log.info("🔍 [SESSION] Validating saved session via API...")
+        if validate_session(saved["shopee_tob_token"], saved.get("shopee_tob_entity_id", "")):
+            session_valid = True
+
+    run_headless_now = headless
+    login_needed = not session_valid
+    if login_needed and headless:
+        log.info("⚠️ [SESSION] No active session. Opening browser with interface (headed) for login & OTP...")
+        run_headless_now = False
+
     for attempt in range(3):
-        log.info(f"🌐 [BROWSER] Launching (headless={headless}, attempt={attempt+1}/3)...")
-        driver = _init_driver(headless=headless)
+        if login_needed and headless:
+            run_headless_now = False
+
+        log.info(f"🌐 [BROWSER] Launching (headless={run_headless_now}, attempt={attempt+1}/3)...")
+        driver = _init_driver(headless=run_headless_now)
         wait = WebDriverWait(driver, 30)
         session_success = False
 
@@ -894,7 +911,6 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
             
             # Restore from file only on first attempt if not logged in
             if not is_logged_in and attempt == 0:
-                saved = load_session()
                 if saved:
                     log.debug("🔍 Attempting to restore session from saved tokens...")
                     driver.add_cookie({"name": "shopee_tob_token", "value": saved["shopee_tob_token"]})
@@ -1012,7 +1028,43 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
                         except: pass
                         time.sleep(1)
                     if bypass_success: time.sleep(2)
-            
+
+            # --- TRANSITION HEADED -> HEADLESS AFTER LOGIN ---
+            if login_needed and headless:
+                log.info("✅ Login successful. Saving session and transitioning to headless mode...")
+                t, eid = _trigger_and_extract_tokens(driver)
+                if not t:
+                    log.warning("⚠️ Token extraction failed before transitioning to headless.")
+                    driver.quit()
+                    continue
+                
+                all_c = get_all_cookies_dict(driver)
+                save_session(t, eid or "", extra_cookies=all_c)
+                
+                # Close headed browser
+                driver.quit()
+                driver = None
+                
+                # Launch headless browser
+                log.info("🌐 Re-launching browser in HEADLESS mode...")
+                driver = _init_driver(headless=True)
+                wait = WebDriverWait(driver, 30)
+                
+                # Load cookies
+                driver.get("https://partner.shopee.co.id/")
+                time.sleep(2)
+                for name, value in all_c.items():
+                    try:
+                        driver.add_cookie({"name": name, "value": value})
+                    except:
+                        pass
+                driver.get(PARTNER_DASHBOARD)
+                time.sleep(4)
+                
+                # Reset flags so subsequent steps run in headless
+                login_needed = False
+                run_headless_now = True
+
             # ── Step 4: Extract current ID & Name via API ──
             log.debug("🔍 Fetching active merchant info via API...")
             active_id = None
