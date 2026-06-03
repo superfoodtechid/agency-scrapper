@@ -131,13 +131,13 @@ def run_pipeline():
         if args.merchant:
             m_underscored = args.merchant.replace(' ', '_').replace('|', '_')
             if len(m_underscored) > 50:
-                old_excels = glob.glob(os.path.join(report_dir, "Master_Weekly_Report_ShopeeFood*.xlsx")) + glob.glob(os.path.join(report_dir, "0Master_Weekly_Report_ShopeeFood*.xlsx"))
+                old_excels = glob.glob(os.path.join(report_dir, "0Master*.xlsx"))
             else:
                 old_excels = glob.glob(os.path.join(report_dir, f"*{m_underscored}*.xlsx"))
         else:
             old_excels = glob.glob(os.path.join(report_dir, "*.xlsx"))
             
-        old_excels = [f for f in old_excels if not os.path.basename(f).startswith("Master_Weekly_Report_ShopeeFood") and not os.path.basename(f).startswith("0Master_Weekly_Report_ShopeeFood")]
+        old_excels = [f for f in old_excels if not os.path.basename(f).startswith("Master_Weekly_Report_ShopeeFood") and not os.path.basename(f).startswith("0Master")]
             
         if old_excels:
             log.info(f"🧹 Clearing {len(old_excels)} old Excel files in {report_dir} to prepare for fresh run...")
@@ -478,7 +478,7 @@ def run_pipeline():
         filename = os.path.basename(fpath)
         
         # Skip Master and other compiled/analyzed reports
-        if filename.startswith("Master_") or filename.startswith("0Master_") or filename.startswith("CUSTOM_") or filename.startswith("Merged_") or filename.endswith("_Analyzed.xlsx"):
+        if filename.startswith("Master_") or filename.startswith("0Master") or filename.startswith("CUSTOM_") or filename.startswith("Merged_") or filename.endswith("_Analyzed.xlsx"):
             continue
             
         # Determine Merchant Name from filename
@@ -610,11 +610,11 @@ def run_pipeline():
         if args.merchant:
             merchant_safe = str(args.merchant).strip().replace(" ", "_").replace("/", "_").replace("\\", "_").replace("|", "_")
             if len(merchant_safe) > 50:
-                master_filename = f"0Master_Weekly_Report_ShopeeFood_{min_start_str}_{max_end_str}"
+                master_filename = "0Master"
             else:
                 master_filename = f"CUSTOM_{merchant_safe}_{min_start_str}_{max_end_str}"
         else:
-            master_filename = f"0Master_Weekly_Report_ShopeeFood_{min_start_str}_{max_end_str}"
+            master_filename = "0Master"
             
         master_filepath = os.path.join(report_dir, f"{master_filename}.xlsx")
         version = 1
