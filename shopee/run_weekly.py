@@ -187,6 +187,12 @@ def run_pipeline():
                     break
         except Exception:
             pass
+
+    # Hardcoded fallback if still not found
+    if not username:
+        username = "allvbadmin"
+    if not password:
+        password = "Shopee@321"
     # Load headless setting from config.json walk-up
     headless = True
     try:
