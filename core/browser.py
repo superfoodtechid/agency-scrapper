@@ -51,7 +51,17 @@ def get_session_file() -> Path:
 def get_otp_code(username: str, phone: str) -> str:
     discord_mode = os.getenv("OFD_DISCORD_MODE") == "1"
     if not discord_mode:
-        return input(f"🔑 Masukkan 6-digit OTP (atau tekan Enter jika Anda mengisinya langsung di browser): ").strip()
+        if not sys.stdin.isatty():
+            log.warning("⚠️ [OTP] Stdin is not a TTY (running in background/Docker). Cannot prompt for OTP via terminal. Waiting 10 seconds...")
+            time.sleep(10)
+            return ""
+        try:
+            return input(f"🔑 Masukkan 6-digit OTP (atau tekan Enter jika Anda mengisinya langsung di browser): ").strip()
+        except EOFError:
+            log.warning("⚠️ [OTP] Stdin reached EOF. Waiting 10 seconds...")
+            time.sleep(10)
+            return ""
+
     
     script_dir = Path(__file__).resolve().parent.parent
     data_dir = script_dir / "data"
@@ -76,7 +86,7 @@ def get_otp_code(username: str, phone: str) -> str:
     log.info(f"⏳ [DISCORD] Menunggu input OTP dari Discord untuk akun {username}...")
     
     start_wait = time.time()
-    while time.time() - start_wait < 300:
+    while time.time() - start_wait < 86400:
         if otp_file.exists():
             try:
                 data = json.loads(otp_file.read_text())
@@ -122,10 +132,14 @@ class ModuleWrapper(sys.modules[__name__].__class__):
         set_session_file(value)
 
 sys.modules[__name__].__class__ = ModuleWrapper
-PARTNER_DASHBOARD = "https://partner.shopee.co.id/food/dashboard"
-TOKEN_TRIGGER_PAGE = "https://partner.shopee.co.id/settings/shopee-food/business-hours-settings"
-VALIDATE_URL    = "https://api.partner.shopee.co.id/nb/mss/web-api/PartnerAccountServer/GetUserInfo"
-SHOPEE_IMG_BASE = "https://down-id.img.susercontent.com/file"
+PARTNER_DASHBOARD    = "https://partner.shopee.co.id/food/dashboard"
+TOKEN_TRIGGER_PAGE   = "https://partner.shopee.co.id/settings/shopee-food/business-hours-settings"
+MERCHANT_SELECTOR_URL = "https://partner.shopee.co.id/food/dashboard"  # ALIASED to dashboard to prevent redirect to merchant-selector
+VALIDATE_URL         = "https://api.partner.shopee.co.id/nb/mss/web-api/PartnerAccountServer/GetUserInfo"
+SHOPEE_IMG_BASE      = "https://down-id.img.susercontent.com/file"
+
+# Words that must NEVER be clicked — guard against accidental logout
+LOGOUT_KEYWORDS = ["log out", "logout", "keluar", "sign out", "signout"]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -133,6 +147,377 @@ SHOPEE_IMG_BASE = "https://down-id.img.susercontent.com/file"
 def human_like_typing(element, text: str):
     # Direct input is faster; using it as requested
     element.send_keys(text)
+
+def _is_safe_to_click(element) -> bool:
+    """Returns False if the element text matches a logout/exit keyword."""
+    try:
+        text = (element.text or "").strip().lower()
+        if not text:
+            text = (element.get_attribute("innerText") or "").strip().lower()
+        return not any(kw in text for kw in LOGOUT_KEYWORDS)
+    except Exception:
+        return True  # Assume safe if text cannot be read
+
+def _detect_and_recover_logout(driver) -> bool:
+    """
+    Safety-net: detects if the browser accidentally got logged out.
+    Attempts re-entry using the existing Chrome profile cookies (no OTP needed).
+    Returns True if recovery succeeded, False otherwise.
+    """
+    current = driver.current_url.lower()
+    logged_out = (
+        "/login" in current
+        or "/authenticate/login" in current
+        or "about:blank" in current
+    )
+    if not logged_out:
+        return False  # Not logged out — nothing to do
+
+    log.warning("⚠️  [LOGOUT-RECOVERY] Accidental logout detected! Trying to recover via Chrome profile...")
+    try:
+        driver.get(PARTNER_DASHBOARD)
+        time.sleep(5)
+        recovered_url = driver.current_url.lower()
+        if "dashboard" in recovered_url or "merchant-selector" in recovered_url:
+            log.info("✅ [LOGOUT-RECOVERY] Recovered without OTP — Chrome profile cookies still valid.")
+            return True
+    except Exception as err:
+        log.warning(f"⚠️  [LOGOUT-RECOVERY] Recovery attempt failed: {err}")
+
+    log.warning("⚠️  [LOGOUT-RECOVERY] Could not recover automatically — full re-login may be needed.")
+    return False
+
+def _deliberate_logout_and_relogin(
+    driver,
+    username: str = None,
+    password: str = None,
+    phone:    str = None,
+) -> bool:
+    """
+    Intentional recovery strategy for when merchant cannot be detected.
+
+    Flow:
+      1. Click the profile area  →  open dropdown
+      2. Click 'Log Out' from the dropdown
+      3. Click the confirmation 'Log Out' button
+      4. Try Chrome profile auto-login (fast path, no OTP)
+      5. Fallback: enter credentials (username/password) via _perform_login()
+      Returns True if back on the portal, False on complete failure.
+    """
+    log.info("🔄 [LOGOUT-RELOGIN] Initiating deliberate logout for clean session recovery...")
+    try:
+        # ── Step 1: Navigate to a page that has the profile dropdown ───
+        if "/food/" not in driver.current_url and "/settings/" not in driver.current_url:
+            driver.get(PARTNER_DASHBOARD)
+            time.sleep(3)
+
+        # ── Step 2: Open the profile/merchantName dropdown with retries ───
+        profile_clicked = False
+        for attempt in range(3):
+            # Dismiss any blocking overlays/notifications
+            driver.execute_script("""
+                document.querySelectorAll('.ant-notification, .ant-modal, .ant-notification-notice, .ant-message').forEach(el => el.remove());
+            """)
+            
+            # Find the WebElement via JS returning it
+            profile_el = driver.execute_script("""
+                var profileEl = null;
+                // 1. Try specific CSS selectors first
+                for (var sel of ['.merchantName', '.user-info', '.ant-dropdown-trigger', '.ant-dropdown-link']) {
+                    var el = document.querySelector(sel);
+                    if (el && el.offsetHeight > 0) {
+                        profileEl = el;
+                        break;
+                    }
+                }
+                // 2. Search for element containing "Admin:"
+                if (!profileEl) {
+                    var elements = Array.from(document.querySelectorAll('span, p, div, li, a'));
+                    for (var el of elements) {
+                        var text = (el.innerText || '').trim();
+                        if (text.includes('Admin:') && text.length < 30 && el.offsetHeight > 0) {
+                            profileEl = el;
+                            break;
+                        }
+                    }
+                }
+                // 3. Fallback to last .ant-dropdown-trigger
+                if (!profileEl) {
+                    var triggers = Array.from(document.querySelectorAll('.ant-dropdown-trigger, .ant-dropdown-link'));
+                    if (triggers.length > 0) {
+                        profileEl = triggers[triggers.length - 1];
+                    }
+                }
+                return profileEl;
+            """)
+            
+            if profile_el:
+                log.info(f"  📍 Found profile menu element (Attempt {attempt+1}). Dispatching JS click...")
+                # Dispatch JS events
+                driver.execute_script("""
+                    var el = arguments[0];
+                    var ev1 = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
+                    var ev2 = new MouseEvent('mouseenter', { bubbles: true, cancelable: true });
+                    var ev3 = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+                    var ev4 = new MouseEvent('click', { bubbles: true, cancelable: true });
+                    var ev5 = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
+                    el.dispatchEvent(ev1);
+                    el.dispatchEvent(ev2);
+                    el.dispatchEvent(ev3);
+                    el.dispatchEvent(ev4);
+                    el.dispatchEvent(ev5);
+                """, profile_el)
+                time.sleep(1.5)
+                
+                # Check if dropdown is visible (ignoring hidden parents)
+                has_dropdown = driver.execute_script("""
+                    var targets = ['log out', 'logout', 'keluar'];
+                    var candidates = Array.from(document.querySelectorAll('li, span, div, a'));
+                    for (var el of candidates) {
+                        var rect = el.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0) continue;
+                        if (el.closest('.ant-dropdown-hidden, [style*="display: none"], [style*="visibility: hidden"]')) continue;
+                        var text = (el.innerText || '').trim().toLowerCase();
+                        if (targets.some(function(k){ return text.includes(k); })) {
+                            return true;
+                        }
+                    }
+                    return false;
+                """)
+                
+                if not has_dropdown:
+                    log.info("  ⚠️ JS click did not reveal dropdown. Retrying with Selenium native ActionChains hover/click...")
+                    try:
+                        actions = ActionChains(driver)
+                        actions.move_to_element(profile_el).perform()
+                        time.sleep(0.5)
+                        actions.click(profile_el).perform()
+                        time.sleep(1.5)
+                        
+                        has_dropdown = driver.execute_script("""
+                            var targets = ['log out', 'logout', 'keluar'];
+                            var candidates = Array.from(document.querySelectorAll('li, span, div, a'));
+                            for (var el of candidates) {
+                                var rect = el.getBoundingClientRect();
+                                if (rect.width === 0 || rect.height === 0) continue;
+                                if (el.closest('.ant-dropdown-hidden, [style*="display: none"], [style*="visibility: hidden"]')) continue;
+                                var text = (el.innerText || '').trim().toLowerCase();
+                                if (targets.some(function(k){ return text.includes(k); })) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        """)
+                    except Exception as e:
+                        log.warning(f"  ⚠️ ActionChains failed: {e}")
+                
+                if has_dropdown:
+                    log.info("  ✅ Dropdown is now visible.")
+                    profile_clicked = True
+                    break
+                else:
+                    log.warning("  ⚠️ Dropdown menu elements not visible yet. Retrying...")
+            else:
+                log.warning(f"  ⚠️ Profile element not found on page (Attempt {attempt+1}). Retrying...")
+            time.sleep(1.5)
+
+        if not profile_clicked:
+            log.warning("  ⚠️ Profile element or dropdown could not be opened.")
+            return False
+
+        # ── Step 3: Find and click 'Log Out' in the dropdown ────────────
+        logout_el = driver.execute_script("""
+            var targets = ['log out', 'logout', 'keluar'];
+            var candidates = Array.from(document.querySelectorAll(
+                'li.ant-menu-item, li[role="menuitem"], .ant-dropdown-menu-item,'
+                + '[class*="menu-item"], span, div, a'
+            ));
+            for (var el of candidates) {
+                var rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) continue;
+                if (el.closest('.ant-dropdown-hidden, [style*="display: none"], [style*="visibility: hidden"]')) continue;
+                
+                var text = (el.innerText || '').trim().toLowerCase();
+                if (targets.some(function(k){ return text === k; })) {
+                    // Walk up to the closest interactive wrapper (e.g. li or .ant-dropdown-menu-item)
+                    var clickable = el.closest('li, button, a, [role="menuitem"], .ant-dropdown-menu-item') || el;
+                    return clickable;
+                }
+            }
+            return null;
+        """)
+
+        if not logout_el:
+            log.warning("  ⚠️ 'Log Out' menu item not found in dropdown.")
+            return False
+
+        # Click it using Selenium
+        try:
+            log.info("  👈 Clicking 'Log Out' menu item...")
+            logout_el.click()
+        except Exception:
+            # Fallback to ActionChains
+            try:
+                ActionChains(driver).move_to_element(logout_el).click().perform()
+            except Exception as e:
+                log.warning(f"  ⚠️ Selenium click failed: {e}. Trying JS MouseEvents as fallback...")
+                driver.execute_script("""
+                    var el = arguments[0];
+                    var ev1 = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
+                    var ev2 = new MouseEvent('mouseenter', { bubbles: true, cancelable: true });
+                    var ev3 = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+                    var ev4 = new MouseEvent('click', { bubbles: true, cancelable: true });
+                    var ev5 = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
+                    el.dispatchEvent(ev1); el.dispatchEvent(ev2); el.dispatchEvent(ev3); el.dispatchEvent(ev4); el.dispatchEvent(ev5);
+                """, logout_el)
+        
+        time.sleep(1.5)  # Wait for confirmation dialog
+
+        # ── Step 4: Click the 'Log Out' confirmation button with retries ────
+        confirm_clicked = False
+        for confirm_attempt in range(5):
+            confirm_el = driver.execute_script("""
+                var targets = ['log out', 'logout', 'keluar'];
+                // ONLY look inside modal containers
+                var modal = document.querySelector('.ant-modal-content, .ant-modal, .ant-dialog, .ant-modal-wrap');
+                if (!modal) return null;
+                
+                var candidates = Array.from(modal.querySelectorAll('button, .ant-btn, [role="button"]'));
+                for (var btn of candidates) {
+                    var rect = btn.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) continue;
+                    var text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+                    if (targets.some(function(k){ return text === k || text === ('confirm ' + k); })) {
+                        // Walk up to the closest clickable element (e.g. button or .ant-btn)
+                        var clickable = btn.closest('button, [role="button"], a, .ant-btn') || btn;
+                        return clickable;
+                    }
+                }
+                return null;
+            """)
+            
+            if confirm_el:
+                log.info(f"  📍 Found confirmation button on Attempt {confirm_attempt+1}. Clicking...")
+                try:
+                    confirm_el.click()
+                except Exception as e:
+                    log.warning(f"  ⚠️ Selenium click failed: {e}. Trying ActionChains...")
+                    try:
+                        ActionChains(driver).move_to_element(confirm_el).click().perform()
+                    except Exception as e2:
+                        log.warning(f"  ⚠️ ActionChains click failed: {e2}. Trying JS click...")
+                        driver.execute_script("arguments[0].click();", confirm_el)
+                
+                time.sleep(2)
+                # Verify if modal is gone
+                modal_present = driver.execute_script("""
+                    var modal = document.querySelector('.ant-modal-content, .ant-modal, .ant-dialog, .ant-modal-wrap');
+                    return !!(modal && modal.offsetHeight > 0);
+                """)
+                if not modal_present:
+                    log.info("  ✅ Modal disappeared. Logout confirmed.")
+                    confirm_clicked = True
+                    break
+                else:
+                    log.warning("  ⚠️ Modal is still present after click. Retrying...")
+            else:
+                log.warning(f"  ⚠️ Confirmation button/modal not found yet (Attempt {confirm_attempt+1}). Retrying...")
+                time.sleep(1.5)
+
+        if not confirm_clicked:
+            log.warning("  ⚠️ Confirmation 'Log Out' button could not be clicked via UI.")
+            
+            # --- DEBUG SCREENSHOT JIKA KLIK GAGAL ---
+            try:
+                import os
+                debug_dir = os.path.join("src", "shopee-omzet-automation", "data", "debug")
+                os.makedirs(debug_dir, exist_ok=True)
+                ss_fail_path = os.path.join(debug_dir, "modal_fail_server.png")
+                driver.save_screenshot(ss_fail_path)
+                log.info(f"  📸 [DEBUG] Screenshot penyebab kegagalan klik disimpan di {ss_fail_path}")
+            except Exception as e:
+                pass
+            # ----------------------------------------
+            
+            log.info("  🛡️ Mengaktifkan 'Soft Session Kill' Fallback (Hanya hapus Cookie Sesi)...")
+            try:
+                # Escape the modal just in case
+                driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            except Exception:
+                pass
+                
+            try:
+                # Hanya hapus cookie autentikasi utama yang menandakan status login
+                auth_cookies = ['SPC_ST', 'SPC_U', 'SPC_T_ID', 'SPC_T_IV']
+                for cookie_name in auth_cookies:
+                    try:
+                        driver.delete_cookie(cookie_name)
+                    except:
+                        pass
+                
+                # Bersihkan cache JWT / state auth dari LocalStorage
+                driver.execute_script("window.localStorage.clear(); window.sessionStorage.clear();")
+                
+                # JANGAN hapus SPC_F atau SPC_EC (Cookie Device Fingerprint) agar tidak trigger OTP!
+                
+                log.info("  ✅ Soft Session Kill dieksekusi. Sesi dibersihkan tanpa menghapus Device Fingerprint.")
+                driver.refresh()
+                time.sleep(3)
+            except Exception as e:
+                log.warning(f"  ⚠️ Soft Session Kill gagal: {e}")
+                return False
+
+        log.info("  ✅ Logout confirmed. Waiting for login page...")
+        time.sleep(3)
+
+        # ── Step 5a: Try Chrome profile auto-login (fast path) ──────────
+        log.info("  🌐 Attempting Chrome profile auto-login...")
+        driver.get(PARTNER_DASHBOARD)
+        time.sleep(5)
+        url_now = driver.current_url.lower()
+        if "dashboard" in url_now or "merchant-selector" in url_now or "onboarding" in url_now:
+            log.info("  ✅ [LOGOUT-RELOGIN] Auto-login via Chrome profile succeeded!")
+            return True
+
+        # ── Step 5b: Fallback — login dengan kredensial ────────────────
+        log.info("  ⚠️ Chrome profile auto-login failed — logging in with credentials...")
+        if not (username and password) and not phone:
+            log.warning("  ⚠️ No credentials provided — cannot complete login.")
+            return False
+
+        # Navigate to login page if not already there
+        current = driver.current_url.lower()
+        if "login" not in current and "authenticate" not in current:
+            driver.get("https://partner.shopee.co.id/login")
+            time.sleep(4)
+
+        wait = WebDriverWait(driver, 30)
+        login_ok = _perform_login(driver, wait, username=username, password=password, phone=phone)
+        if not login_ok:
+            log.error("  ❌ Credential login failed.")
+            return False
+
+        # Wait for dashboard or merchant selector after login
+        time.sleep(3)
+        url_after = driver.current_url.lower()
+        if "dashboard" in url_after or "merchant-selector" in url_after or "onboarding" in url_after:
+            log.info("  ✅ [LOGOUT-RELOGIN] Credential login succeeded!")
+            return True
+
+        # Handle merchant-selector page if redirected there post-login
+        for _ in range(10):
+            url_after = driver.current_url.lower()
+            if "dashboard" in url_after or "merchant-selector" in url_after or "onboarding" in url_after:
+                log.info("  ✅ [LOGOUT-RELOGIN] Logged in and on portal.")
+                return True
+            time.sleep(1)
+
+        log.warning(f"  ⚠️ [LOGOUT-RELOGIN] Unexpected URL after credential login: {driver.current_url}")
+        return False
+
+    except Exception as e:
+        log.error(f"  ❌ [LOGOUT-RELOGIN] Failed: {e}")
+        return False
 
 def build_img_url(img_id: str) -> str:
     if not img_id: return ""
@@ -385,7 +770,7 @@ def _perform_login(driver, wait, username: str = None, password: str = None, pho
     otp_attempted = False
     wa_otp_triggered = False
     last_resend_time = time.time()
-    while time.time() - start_wait < 300:
+    while time.time() - start_wait < 86400:
         if "/authenticate/login" not in driver.current_url: break
         try:
             otp_input = None
@@ -396,7 +781,7 @@ def _perform_login(driver, wait, username: str = None, password: str = None, pho
                 if otp_input: break
 
             if otp_input:
-                if not wa_otp_triggered:
+                if not wa_otp_triggered and username != "allvbadmin":
                     log.warning(f"⚠️ [OTP REQUIRED] Akun '{username or phone}' memerlukan kode verifikasi OTP. Menunggu 1 menit sebelum beralih ke WhatsApp OTP...")
                     time.sleep(60)
                     log.info("🔍 Mencoba mengubah metode pengiriman OTP ke WhatsApp...")
@@ -458,6 +843,7 @@ def _perform_login(driver, wait, username: str = None, password: str = None, pho
                         if wa_clicked:
                             log.info("👉 Berhasil memilih metode WhatsApp. Menunggu pengiriman...")
                             time.sleep(5)
+                            last_resend_time = time.time()  # Reset resend timer when WA OTP is triggered
                         else:
                             log.warning("⚠️ Opsi WhatsApp tidak ditemukan di menu.")
                     else:
@@ -480,6 +866,7 @@ def _perform_login(driver, wait, username: str = None, password: str = None, pho
                     except Exception as err:
                         log.warning(f"⚠️ Gagal memasukkan OTP ke elemen browser: {err}")
                     time.sleep(5)
+                    last_resend_time = time.time()  # Reset resend timer when OTP is successfully inputted
                 else:
                     log.info("ℹ️ Menunggu 10 detik untuk input langsung di browser...")
                     time.sleep(10)
@@ -498,7 +885,17 @@ def _perform_login(driver, wait, username: str = None, password: str = None, pho
                     except: pass
 
             if otp_attempted or not otp_input:
-                for cs in ["//button[contains(., 'Lanjutkan')]", "//button[contains(., 'Confirm')]", ".shopee-button--primary"]:
+                for cs in [
+                    "//button[contains(., 'Lanjutkan')]",
+                    "//button[contains(., 'Confirm')]",
+                    "//button[contains(., 'Verifikasi')]",
+                    "//button[contains(., 'Konfirmasi')]",
+                    "//button[contains(., 'Selanjutnya')]",
+                    "//button[contains(., 'Masuk')]",
+                    "//button[contains(., 'Next')]",
+                    ".shopee-button--primary",
+                    "button.shopee-button"
+                ]:
                     btns = driver.find_elements(By.XPATH, cs) if cs.startswith("//") else driver.find_elements(By.CSS_SELECTOR, cs)
                     for b in btns:
                         if b.is_displayed() and "ulang" not in b.text.lower():
@@ -714,26 +1111,43 @@ def _handle_merchant_selection(driver, active_id_forced=None, interactive=True):
         all_merchants_data = {}
         try:
             api_response_path = Path(__file__).resolve().parent.parent / "API" / "response.json"
-            with open(api_response_path, "r") as f:
-                data = json.load(f)
-                for m in data.get("data", {}).get("selectMerchant", {}).get("merchantList", []):
-                    all_merchants_data[m["merchantName"].lower()] = str(m["merchantId"])
+            if api_response_path.exists():
+                with open(api_response_path, "r") as f:
+                    data = json.load(f)
+                    for m in data.get("data", {}).get("selectMerchant", {}).get("merchantList", []):
+                        all_merchants_data[m["merchantName"].lower()] = str(m["merchantId"])
         except: pass
 
         target_names = list(all_merchants_data.keys())
         
-        # Robust JS scan for merchant list
+        # Robust & 1vCPU friendly JS scan for merchant list
         for attempt in range(10):
             log.debug(f"  📥 Scanning for merchants (Attempt {attempt+1}/10)...")
             scan_result = driver.execute_script("""
                 var results = [];
-                var items = document.querySelectorAll('div, li, span, p');
+                // Target specific merchant-like containers to avoid querying thousands of nodes
+                var items = document.querySelectorAll('li, [class*="merchant"], [class*="shop"]');
                 for (var i = 0; i < items.length; i++) {
                     var el = items[i];
-                    if (el.children.length > 5) continue;
+                    // Skip wrappers with many children to target leaf nodes/cards
+                    if (el.children.length > 3) continue;
                     var text = (el.innerText || "").trim().split('\\n')[0];
-                    if (!text || text.length < 3) continue;
+                    if (!text || text.length < 3 || text.length > 50) continue;
                     
+                    // Exclude generic non-merchant phrases inside JS to save CPU
+                    var name_key = text.toLowerCase();
+                    var generic = [
+                        "akun", "pengaturan", "log out", "halaman utama", "baru", "menu", "outlet", 
+                        "shopeefood", "terapkan", "sembunyikan", "notifikasi", "pilih merchant lain", 
+                        "pusat bantuan", "transaksi berhasil", "baris per halaman", "ringkasan toko", 
+                        "nama toko", "jumlah total", "laporan saya", "penghasilan", "performa outlet", 
+                        "periode transaksi", "ubah bahasa", "daftar merchant", "daftar di sini", 
+                        "memulai bisnis baru?", "pilih merchant", "gabung dengan merchant", 
+                        "buat merchant baru", "hubungi kami", "faq", "syarat & ketentuan",
+                        "pusat edukasi seller"
+                    ];
+                    if (generic.some(g => name_key === g || name_key.includes(g))) continue;
+
                     let rect = el.getBoundingClientRect();
                     if (rect.width > 0 && rect.height > 0) {
                         results.push({ name: text, index: i });
@@ -743,7 +1157,7 @@ def _handle_merchant_selection(driver, active_id_forced=None, interactive=True):
             """)
 
             if scan_result:
-                all_els = driver.find_elements(By.CSS_SELECTOR, 'div, li, span, p')
+                all_els = driver.find_elements(By.CSS_SELECTOR, 'li, [class*="merchant"], [class*="shop"]')
                 for r in scan_result:
                     name = r['name']
                     name_key = name.lower()
@@ -754,11 +1168,20 @@ def _handle_merchant_selection(driver, active_id_forced=None, interactive=True):
                     if all_merchants_data and m_id == "Unknown":
                         continue
                         
-                    # Filter out obvious non-merchant generic texts jika terpaksa
-                    generic_texts = ["akun", "pengaturan", "log out", "halaman utama", "baru", "menu", "outlet", "shopeefood", "terapkan", "sembunyikan", "notifikasi", "pilih merchant lain", "pusat bantuan", "transaksi berhasil", "baris per halaman", "ringkasan toko", "nama toko", "jumlah total", "laporan saya", "penghasilan", "performa outlet", "periode transaksi", "ubah bahasa"]
-                    if m_id == "Unknown" and (len(name) < 4 or any(g == name_key for g in generic_texts) or "diupdate pada" in name_key):
+                    # Filter out obvious non-merchant generic texts
+                    generic_texts = [
+                        "akun", "pengaturan", "log out", "halaman utama", "baru", "menu", "outlet", 
+                        "shopeefood", "terapkan", "sembunyikan", "notifikasi", "pilih merchant lain", 
+                        "pusat bantuan", "transaksi berhasil", "baris per halaman", "ringkasan toko", 
+                        "nama toko", "jumlah total", "laporan saya", "penghasilan", "performa outlet", 
+                        "periode transaksi", "ubah bahasa", "daftar merchant", "daftar di sini", 
+                        "memulai bisnis baru?", "pilih merchant", "gabung dengan merchant", 
+                        "buat merchant baru", "hubungi kami", "faq", "syarat & ketentuan", 
+                        "pusat edukasi seller"
+                    ]
+                    if m_id == "Unknown" and (len(name) < 4 or any(g == name_key or g in name_key for g in generic_texts) or "diupdate pada" in name_key):
                         continue
-
+                        
                     if m_id != active_id and name not in all_found:
                         all_found[name] = {"name": name, "element": all_els[r['index']], "id": m_id}
             
@@ -767,7 +1190,8 @@ def _handle_merchant_selection(driver, active_id_forced=None, interactive=True):
             driver.execute_script("document.querySelectorAll('div[class*=\"menu\"], ul[class*=\"menu\"], .ant-popover-content').forEach(el => el.scrollTop += 300);")
             time.sleep(1.5)
 
-        merchants = sorted(all_found.values(), key=lambda x: x['name'])
+        # Do NOT sort alphabetically! Keep original DOM layout order (first merchant visible = index 1)
+        merchants = list(all_found.values())
         if not merchants:
             if "/food/dashboard" in driver.current_url: return True
             log.warning("⚠️ No merchants found in scan.")
@@ -780,8 +1204,25 @@ def _handle_merchant_selection(driver, active_id_forced=None, interactive=True):
         if interactive:
             choice = input(f"\nPilih nomor (1-{len(merchants)}) atau Enter untuk lanjut: ").strip()
         else:
-            log.info("⏭️  [MERCHANT] Mode otomatis (tanpa timeout), memilih Enter (lanjut) secara otomatis...")
-            choice = ""
+            log.info("⏭️  [MERCHANT] Mode otomatis (tanpa timeout), memilih secara otomatis...")
+            if "/food/dashboard" not in driver.current_url:
+                matched_idx = None
+                
+                # 1. Coba cocokkan dengan active_id_forced
+                if active_id_forced:
+                    for i, m in enumerate(merchants):
+                        if str(m["id"]) == str(active_id_forced):
+                            matched_idx = i + 1
+                            break
+                            
+                if matched_idx:
+                    log.info(f"👉 Ditemukan indeks merchant yang cocok: {matched_idx} ({merchants[matched_idx-1]['name']})")
+                    choice = str(matched_idx)
+                else:
+                    log.info("👉 [MERCHANT] Onboarding/Selector page detected. Automatically choosing the first merchant to proceed.")
+                    choice = "1"
+            else:
+                choice = ""
             
         if not choice: return True
         
@@ -807,91 +1248,105 @@ def _handle_merchant_selection(driver, active_id_forced=None, interactive=True):
 
 def return_to_selector(driver) -> bool:
     """
-    Navigates to the merchant selection interface using UI clicks (Profile -> Pilih Merchant Lain).
-    This avoids using the full-page redirect URL.
+    Navigates to the merchant selection interface.
+
+    Strategy (safe order):
+      1. Hover .merchantName to open the profile dropdown.
+      2. Scan visible dropdown items with a LOGOUT_KEYWORDS blacklist.
+      3. Click the first item that contains 'Pilih Merchant' / 'Switch Merchant'.
+      4. If not found safely → fall back to direct URL navigation.
+
+    ⚠️  We NEVER do a blind element click after opening the dropdown because
+         doing so has been observed to trigger the 'Log Out' button and cause
+         an accidental logout (confirmed bug, 2026-06-04).
     """
-    log.debug("🔄 Opening merchant selector via UI menu...")
+    log.debug("🔄 Opening merchant selector via UI menu (safe mode)...")
     try:
-        # Ensure we are on a page where the menu exists
+        # Ensure we are on a page where the profile menu exists
         if "/food/dashboard" not in driver.current_url:
             driver.get(PARTNER_DASHBOARD)
-            time.sleep(2)
+            time.sleep(3)
 
-        wait = WebDriverWait(driver, 15)
+        wait    = WebDriverWait(driver, 10)
         actions = ActionChains(driver)
 
-        # 1. Find and hover over Profile/Account menu or Merchant Name
-        selectors = [
-            ".merchantName", 
-            "li[data-menu-id*='account']", 
-            ".ant-menu-item-only-child[data-menu-id*='account']",
-            "div[class*='account']",
-            ".user-info",
-            "li.ant-menu-item:last-child"
-        ]
+        # ── Step 1: Locate the profile / merchant-name element ──────────────
         profile_menu = None
-        for sel in selectors:
+        for sel in [".merchantName", ".user-info", "li.ant-menu-item:last-child"]:
             try:
                 el = driver.find_element(By.CSS_SELECTOR, sel)
                 if el.is_displayed():
                     profile_menu = el
                     break
-            except: continue
-        
-        if not profile_menu:
-            log.warning("⚠️ Could not find profile/merchant menu in UI.")
-            # If user strictly doesn't want URL, we try one more thing: look for any element with 'Pilih Merchant'
-            try:
-                el = driver.find_element(By.XPATH, "//*[contains(text(), 'Pilih Merchant')]")
-                el.click()
-                return True
-            except:
-                log.warning("⚠️ Falling back to URL navigation.")
-                driver.get("https://partner.shopee.co.id/authenticate/merchant-selector")
-                return True
+            except Exception:
+                continue
 
-        # Try to click directly or hover
+        if not profile_menu:
+            log.warning("⚠️ Profile menu not found — using direct URL fallback.")
+            driver.get(MERCHANT_SELECTOR_URL)
+            return True
+
+        # ── Step 2: Hover to open the dropdown ─────────────────────────────
         try:
             actions.move_to_element(profile_menu).perform()
-            time.sleep(0.5)
-        except: pass
-        
-        # Look for "Pilih Merchant Lain" or just click the merchant name if it opens a menu
-        try:
-            switch_trigger = wait.until(EC.element_to_be_clickable((By.XPATH, "//span[text()='Pilih Merchant Lain' or text()='Switch Merchant' or contains(text(), 'Ubah')]")))
-            driver.execute_script("arguments[0].click();", switch_trigger)
-        except:
-            # Maybe clicking the merchantName itself opens it?
-            driver.execute_script("arguments[0].click();", profile_menu)
-        
-        time.sleep(2) # Wait for list to appear
+            time.sleep(1)  # Let the dropdown render
+        except Exception:
+            pass
+
+        # ── Step 3: Scan dropdown items with blacklist guard ────────────────
+        # Use JS to read all visible menu items and find 'Pilih Merchant Lain'
+        safe_click_done = driver.execute_script("""
+            var keywords = ['pilih merchant', 'switch merchant', 'ganti merchant'];
+            var blacklist = ['log out', 'logout', 'keluar', 'sign out'];
+
+            // Gather all potentially clickable items currently visible
+            var candidates = Array.from(document.querySelectorAll(
+                'li.ant-menu-item, li[role="menuitem"], .ant-dropdown-menu-item, '
+                + '[class*="menu-item"], span, div, a'
+            ));
+
+            for (var el of candidates) {
+                var rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) continue;
+
+                var text = (el.innerText || '').trim().toLowerCase();
+                if (!text) continue;
+
+                // ⛔ NEVER click logout-related elements
+                if (blacklist.some(function(k){ return text.includes(k); })) continue;
+
+                // ✅ Click if it's a 'switch merchant' action
+                if (keywords.some(function(k){ return text.includes(k); })) {
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        """)
+
+        if safe_click_done:
+            log.debug("  ✅ Clicked 'Pilih Merchant Lain' safely via JS scan.")
+            time.sleep(2)
+            return True
+
+        # ── Step 4: Safe fallback — direct URL (no UI interaction risk) ─────
+        log.warning("  ⚠️ 'Pilih Merchant Lain' not found in dropdown — using direct URL fallback.")
+        driver.get(MERCHANT_SELECTOR_URL)
+        time.sleep(3)
         return True
+
     except Exception as e:
-        log.error(f"❌ Failed to open selector via UI: {e}")
-        # Final fallback
-        driver.get("https://partner.shopee.co.id/authenticate/merchant-selector")
+        log.error(f"❌ return_to_selector failed: {e} — falling back to direct URL.")
+        try:
+            driver.get(MERCHANT_SELECTOR_URL)
+        except Exception:
+            pass
         return True
 
 def get_session(username=None, password=None, phone=None, headless=True, close_browser=True, target_name=None, interactive=True) -> dict | None:
-    # 1. Attempt to load from cached session first
-    saved = load_session()
-    session_valid = False
-    if saved:
-        log.info("🔍 [SESSION] Validating saved session via API...")
-        if validate_session(saved["shopee_tob_token"], saved.get("shopee_tob_entity_id", "")):
-            session_valid = True
-
-    run_headless_now = headless
-    login_needed = not session_valid
-
     for attempt in range(3):
-        # We start with the configured headless mode to check if browser is already logged in
-        if attempt > 0:
-            # If attempt > 0, it means the first check failed and login/OTP is required, so we force headed
-            run_headless_now = False
-
-        log.info(f"🌐 [BROWSER] Launching (headless={run_headless_now}, attempt={attempt+1}/3)...")
-        driver = _init_driver(headless=run_headless_now)
+        log.info(f"🌐 [BROWSER] Launching (headless={headless}, attempt={attempt+1}/3)...")
+        driver = _init_driver(headless=headless)
         wait = WebDriverWait(driver, 30)
         session_success = False
 
@@ -910,6 +1365,7 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
             
             # Restore from file only on first attempt if not logged in
             if not is_logged_in and attempt == 0:
+                saved = load_session()
                 if saved:
                     log.debug("🔍 Attempting to restore session from saved tokens...")
                     driver.add_cookie({"name": "shopee_tob_token", "value": saved["shopee_tob_token"]})
@@ -925,26 +1381,41 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
                     if "dashboard" in current_url or "merchant-selector" in current_url:
                         log.info("✅ [SESSION] Restored from saved tokens.")
                         is_logged_in = True
-            
-            # Force fresh login only if genuinely NOT logged in on retry attempts
+
+            # On retry attempts, try injecting saved session tokens BEFORE resorting
+            # to a full fresh login. Chrome may have crashed mid-session (causing
+            # "Connection refused") but the session_{username}.json written by the
+            # previous successful warm cycle is still valid. Injecting those cookies
+            # into a fresh Chrome instance avoids triggering Shopee OTP.
             if not is_logged_in and attempt > 0:
-                log.info(f"⚠️ [SESSION] Forcing fresh login (Attempt {attempt+1})...")
-                driver.delete_all_cookies()
-                driver.get("https://partner.shopee.co.id/login")
-                time.sleep(4)
+                log.info(f"🔄 [SESSION] Attempt {attempt+1}: trying saved tokens before fresh login...")
+                saved = load_session()
+                if saved and saved.get("shopee_tob_token"):
+                    try:
+                        driver.add_cookie({"name": "shopee_tob_token", "value": saved["shopee_tob_token"]})
+                        if saved.get("shopee_tob_entity_id"):
+                            driver.add_cookie({"name": "shopee_tob_entity_id", "value": saved["shopee_tob_entity_id"]})
+                        for n, v in saved.get("extra_cookies", {}).items():
+                            try: driver.add_cookie({"name": n, "value": v})
+                            except: pass
+                        driver.refresh()
+                        time.sleep(4)
+                        current_url = driver.current_url.lower()
+                        if "dashboard" in current_url or "merchant-selector" in current_url:
+                            log.info(f"✅ [SESSION] Restored from saved tokens on retry {attempt+1} — no fresh login needed.")
+                            is_logged_in = True
+                    except Exception as _cookie_err:
+                        log.warning(f"  ⚠️ Cookie injection on retry failed: {_cookie_err}")
+
+                # Only wipe cookies and force fresh login if the token injection also failed
+                if not is_logged_in:
+                    log.info(f"⚠️ [SESSION] Saved tokens also invalid. Forcing fresh login (Attempt {attempt+1})...")
+                    driver.delete_all_cookies()
+                    driver.get("https://partner.shopee.co.id/login")
+                    time.sleep(4)
 
             # ── Step 3: Login if all above failed ──
             if not is_logged_in:
-                # If we are currently headless, but need login/OTP, relaunch headed!
-                if run_headless_now:
-                    log.info("⚠️ [SESSION] No active session. Opening browser with interface (headed) for login & OTP...")
-                    driver.quit()
-                    run_headless_now = False
-                    driver = _init_driver(headless=False)
-                    wait = WebDriverWait(driver, 30)
-                    driver.get(PARTNER_DASHBOARD)
-                    time.sleep(4)
-
                 log.info("⚠️ [SESSION] No active session. Navigating to login...")
                 if "/login" not in driver.current_url.lower() and "authenticate" not in driver.current_url.lower():
                     driver.get("https://partner.shopee.co.id/login")
@@ -1037,43 +1508,7 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
                         except: pass
                         time.sleep(1)
                     if bypass_success: time.sleep(2)
-
-            # --- TRANSITION HEADED -> HEADLESS AFTER LOGIN ---
-            if login_needed and headless and not run_headless_now:
-                log.info("✅ Login successful. Saving session and transitioning to headless mode...")
-                t, eid = _trigger_and_extract_tokens(driver)
-                if not t:
-                    log.warning("⚠️ Token extraction failed before transitioning to headless.")
-                    driver.quit()
-                    continue
-                
-                all_c = get_all_cookies_dict(driver)
-                save_session(t, eid or "", extra_cookies=all_c)
-                
-                # Close headed browser
-                driver.quit()
-                driver = None
-                
-                # Launch headless browser
-                log.info("🌐 Re-launching browser in HEADLESS mode...")
-                driver = _init_driver(headless=True)
-                wait = WebDriverWait(driver, 30)
-                
-                # Load cookies
-                driver.get("https://partner.shopee.co.id/")
-                time.sleep(2)
-                for name, value in all_c.items():
-                    try:
-                        driver.add_cookie({"name": name, "value": value})
-                    except:
-                        pass
-                driver.get(PARTNER_DASHBOARD)
-                time.sleep(4)
-                
-                # Reset flags so subsequent steps run in headless
-                login_needed = False
-                run_headless_now = True
-
+            
             # ── Step 4: Extract current ID & Name via API ──
             log.debug("🔍 Fetching active merchant info via API...")
             active_id = None
@@ -1133,7 +1568,12 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
             
             # ── Step 5: Decision - Switch or Stay? ──
             do_switch = False
-            if target_name:
+            needs_recovery = False
+            
+            if active_name == "Unknown Merchant":
+                log.info(f"📍 [MERCHANT] Unknown merchant detected. Forcing recovery...")
+                needs_recovery = True
+            elif target_name:
                 if active_name.lower() != target_name.lower():
                     log.info(f"📍 [MERCHANT] Current: {active_name} | Target: {target_name}. Switching...")
                     do_switch = True
@@ -1144,17 +1584,39 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
                     log.info(f"📍 [MERCHANT] Current: {active_name} (ID: {active_id})")
                     do_switch = False
                 else:
-                    log.info("📍 [MERCHANT] No active merchant detected. Redirecting...")
-                    do_switch = True
+                    log.info("📍 [MERCHANT] No active merchant ID detected. Forcing recovery...")
+                    needs_recovery = True
 
-            if do_switch:
+            if needs_recovery:
+                log.info("🔄 [MERCHANT] Unknown merchant — initiating logout/relogin recovery...")
+                recovered = _deliberate_logout_and_relogin(
+                    driver,
+                    username=username,
+                    password=password,
+                    phone=phone,
+                )
+                if recovered:
+                    if target_name:
+                        # Attempt to switch to target after recovery
+                        success = auto_switch_merchant(driver, target_name)
+                    else:
+                        # If no target name, just ensure a merchant is selected
+                        success = _handle_merchant_selection(driver, active_id_forced=None, interactive=interactive)
+                else:
+                    log.error("❌ Logout/relogin recovery failed. Cannot proceed.")
+                    success = False
+                    
+                if not success:
+                    log.error("❌ Merchant selection or recovery failed.")
+                    driver.quit()
+                    continue
+
+            elif do_switch:
                 if target_name:
                     success = auto_switch_merchant(driver, target_name)
                 else:
-                    if "/food/dashboard" in driver.current_url:
-                        log.info("🔄 Navigating to merchant selector...")
-                        return_to_selector(driver)
-                    success = _handle_merchant_selection(driver, active_id_forced=active_id, interactive=interactive)
+                    success = _handle_merchant_selection(driver, active_id_forced=None, interactive=interactive)
+                    
                 if not success:
                     log.error("❌ Merchant selection failed.")
                     driver.quit()

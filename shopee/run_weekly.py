@@ -188,11 +188,29 @@ def run_pipeline():
         except Exception:
             pass
 
-    # Hardcoded fallback if still not found
-    if not username:
-        username = "allvbadmin"
-    if not password:
-        password = "Shopee@321"
+    # Hardcoded/CSV fallback if still not found
+    if not username or not password or not phone:
+        try:
+            log.info("🔍 [DATA] Fetching 'allvbadmin' credentials from Google Sheets...")
+            url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ3tLKBNXDqRgBw0mNhKZFxgvKx-JoiTDzm_s5Ix1cm7O6HCv4IvExOLR2HSRVaXSsx82V348mcr9X4/pub?gid=0&single=true&output=csv"
+            df = pd.read_csv(url)
+            mask = df.isin(["allvbadmin"]).any(axis=1)
+            if mask.any():
+                row = df[mask].iloc[0]
+                for col in df.columns:
+                    if str(row[col]) == "allvbadmin":
+                        idx = df.columns.get_loc(col)
+                        username = "allvbadmin"
+                        phone = str(row.iloc[idx+1]).split(".")[0] if pd.notna(row.iloc[idx+1]) else ""
+                        password = str(row.iloc[idx+2]) if pd.notna(row.iloc[idx+2]) else ""
+                        log.info("✅ [DATA] Successfully loaded credentials for 'allvbadmin' from Sheets.")
+                        break
+        except Exception as e:
+            log.warning(f"⚠️ Failed to fetch 'allvbadmin' credentials from Sheets: {e}")
+            
+    # Ultimate fallback if it completely fails
+    if not username: username = "allvbadmin"
+    if not password: password = "Shopee@321"
     # Load headless setting from config.json walk-up
     headless = True
     try:
