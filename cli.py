@@ -137,13 +137,13 @@ def _resolve_shopee_merchant(outlet_name: str, branch_name: str = None) -> str:
 
         df = None
         if os.path.exists(cache_path):
-            import time
             age_hours = (time.time() - os.path.getmtime(cache_path)) / 3600
-            if age_hours < 24:
+            if age_hours < 0.01: # 36 seconds cache instead of 24 hours
                 df = pd.read_csv(cache_path)
 
         if df is None:
-            resp = requests.get(GSHEETS_URL, timeout=15)
+            cache_buster = f"&t={int(time.time())}" if "?" in GSHEETS_URL else f"?t={int(time.time())}"
+            resp = requests.get(GSHEETS_URL + cache_buster, timeout=15)
             df = pd.read_csv(io.StringIO(resp.text))
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             df.to_csv(cache_path, index=False)
@@ -241,7 +241,9 @@ def interactive_mode():
         print(f"\n  {CYAN}[INFO] Mengunduh daftar merchant terbaru dari Google Sheets...{RESET}")
         CSV_URL_MAIN = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ3tLKBNXDqRgBw0mNhKZFxgvKx-JoiTDzm_s5Ix1cm7O6HCv4IvExOLR2HSRVaXSsx82V348mcr9X4/pub?gid=0&single=true&output=csv"
         try:
-            resp_main = requests.get(CSV_URL_MAIN, timeout=30)
+            import time
+            cache_buster = f"&t={int(time.time())}" if "?" in CSV_URL_MAIN else f"?t={int(time.time())}"
+            resp_main = requests.get(CSV_URL_MAIN + cache_buster, timeout=30)
             resp_main.raise_for_status()
             df_main = pd.read_csv(io.StringIO(resp_main.text))
             return df_main

@@ -31,7 +31,7 @@ def subtract_months(dt, months):
         dt = (dt - timedelta(days=1)).replace(day=1)
     return dt
 
-def get_live_merchants(app_name="ShopeeFood", max_age_hours=24, merchant_filter=None):
+def get_live_merchants(app_name="ShopeeFood", max_age_hours=0.01, merchant_filter=None):
     """
     Fetches live merchants from Google Sheets and caches them locally.
     Uses cached data if it's less than max_age_hours old.
@@ -67,7 +67,9 @@ def get_live_merchants(app_name="ShopeeFood", max_age_hours=24, merchant_filter=
     # Jika tidak ada cache atau sudah usang, download ulang
     log.info("🌐 [DATA] Downloading fresh merchant list from Google Sheets...")
     try:
-        df = pd.read_csv(url)
+        import time
+        cache_buster = f"&t={int(time.time())}" if "?" in url else f"?t={int(time.time())}"
+        df = pd.read_csv(url + cache_buster)
         df.to_csv(cache_path, index=False)
         
         sf_df = df[(df['Aplikasi'] == app_name) & (df['Status'] == 'Live')]
@@ -193,7 +195,9 @@ def run_pipeline():
         try:
             log.info("🔍 [DATA] Fetching 'allvbadmin' credentials from Google Sheets...")
             url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ3tLKBNXDqRgBw0mNhKZFxgvKx-JoiTDzm_s5Ix1cm7O6HCv4IvExOLR2HSRVaXSsx82V348mcr9X4/pub?gid=0&single=true&output=csv"
-            df = pd.read_csv(url)
+            import time
+            cache_buster = f"&t={int(time.time())}" if "?" in url else f"?t={int(time.time())}"
+            df = pd.read_csv(url + cache_buster)
             mask = df.isin(["allvbadmin"]).any(axis=1)
             if mask.any():
                 row = df[mask].iloc[0]
