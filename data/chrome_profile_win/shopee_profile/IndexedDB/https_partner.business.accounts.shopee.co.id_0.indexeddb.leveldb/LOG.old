@@ -1,0 +1,14 @@
+2026/06/11-15:02:14.040 4348 Reusing MANIFEST C:\Users\DELL\Downloads\SF\agency\data\chrome_profile_win\shopee_profile\IndexedDB\https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb/MANIFEST-000001
+2026/06/11-15:02:14.041 4348 Recovering log #60
+2026/06/11-15:02:14.041 4348 Reusing old log C:\Users\DELL\Downloads\SF\agency\data\chrome_profile_win\shopee_profile\IndexedDB\https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb/000060.log 
+2026/06/11-15:02:14.042 4348 Delete type=2 #59
+2026/06/11-15:02:14.049 17e8 Level-0 table #65: started
+2026/06/11-15:02:14.053 17e8 Level-0 table #65: 6328 bytes OK
+2026/06/11-15:02:14.054 17e8 Delete type=0 #60
+2026/06/11-15:02:14.055 4348 Manual compaction at level-0 from '\x00\x15\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x16\x00\x00\x00' @ 0 : 0; will stop at '\x00\x15\x00\x00\x05' @ 4110 : 1
+2026/06/11-15:02:14.055 4348 Compacting 1@0 + 1@1 files
+2026/06/11-15:02:14.059 4348 Generated table #66@0: 674 keys, 9159 bytes
+2026/06/11-15:02:14.059 4348 Compacted 1@0 + 1@1 files => 9159 bytes
+2026/06/11-15:02:14.060 4348 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/06/11-15:02:14.060 4348 Delete type=2 #65
+2026/06/11-15:02:14.061 4348 Manual compaction at level-0 from '\x00\x15\x00\x00\x05' @ 4110 : 1 .. '\x00\x16\x00\x00\x00' @ 0 : 0; will stop at (end)

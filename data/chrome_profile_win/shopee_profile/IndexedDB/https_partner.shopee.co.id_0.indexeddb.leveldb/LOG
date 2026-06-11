@@ -1,0 +1,12 @@
+2026/06/11-16:16:16.198 28a8 Reusing MANIFEST C:\Users\DELL\Downloads\SF\agency\data\chrome_profile_win\shopee_profile\IndexedDB\https_partner.shopee.co.id_0.indexeddb.leveldb/MANIFEST-000001
+2026/06/11-16:16:16.199 28a8 Recovering log #88
+2026/06/11-16:16:16.212 28a8 Reusing old log C:\Users\DELL\Downloads\SF\agency\data\chrome_profile_win\shopee_profile\IndexedDB\https_partner.shopee.co.id_0.indexeddb.leveldb/000088.log 
+2026/06/11-16:21:07.610 1d48 Level-0 table #93: started
+2026/06/11-16:21:07.635 1d48 Level-0 table #93: 1065279 bytes OK
+2026/06/11-16:21:07.636 1d48 Delete type=0 #88
+2026/06/11-16:21:14.996 366c Compacting 1@1 + 1@2 files
+2026/06/11-16:21:15.025 366c Generated table #94@1: 13390 keys, 392642 bytes
+2026/06/11-16:21:15.025 366c Compacted 1@1 + 1@2 files => 392642 bytes
+2026/06/11-16:21:15.026 366c compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/06/11-16:21:15.027 366c Delete type=2 #90
+2026/06/11-16:21:15.027 366c Delete type=2 #93
