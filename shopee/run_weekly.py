@@ -37,6 +37,7 @@ def get_live_merchants(app_name="ShopeeFood", max_age_hours=0.01, merchant_filte
     Uses cached data if it's less than max_age_hours old.
     """
     import os
+    import time
     from datetime import datetime
     
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ3tLKBNXDqRgBw0mNhKZFxgvKx-JoiTDzm_s5Ix1cm7O6HCv4IvExOLR2HSRVaXSsx82V348mcr9X4/pub?gid=0&single=true&output=csv"
@@ -67,7 +68,6 @@ def get_live_merchants(app_name="ShopeeFood", max_age_hours=0.01, merchant_filte
     # Jika tidak ada cache atau sudah usang, download ulang
     log.info("🌐 [DATA] Downloading fresh merchant list from Google Sheets...")
     try:
-        import time
         cache_buster = f"&t={int(time.time())}" if "?" in url else f"?t={int(time.time())}"
         df = pd.read_csv(url + cache_buster)
         df.to_csv(cache_path, index=False)
