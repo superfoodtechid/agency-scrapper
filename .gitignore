@@ -25,7 +25,11 @@ session_*.json
 sessions/
 shopee/sessions/
 grab/sessions/
-data/chrome_profile/
-data/chrome_profile_*/
-data/chrome_profiles/
+data/chrome_profile_*/**/Cache/
+data/chrome_profile_*/**/Code Cache/
+data/chrome_profile_*/**/DawnCache/
+data/chrome_profile_*/**/GPUCache/
+data/chrome_profile_*/**/Crashpad/
+data/chrome_profile_*/Singleton*
+data/chrome_profile_*/lockfile
 data/*_cache.csv

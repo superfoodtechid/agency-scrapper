@@ -1028,72 +1028,124 @@ def auto_switch_merchant(driver, target_name):
         if "/food/dashboard" not in driver.current_url:
             driver.get(PARTNER_DASHBOARD)
             time.sleep(2)
-        
-        # PHASE 2: Dashboard Switch Logic
-        if "/food/dashboard" not in driver.current_url:
-            driver.get(PARTNER_DASHBOARD)
-            time.sleep(2)
-        
-        # Use ActionChains to hover Profile then "Pilih Merchant Lain"
-        try:
-            actions = ActionChains(driver)
-            # 1. Hover/Click merchantName (Profile)
-            profile_menu = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".merchantName")))
-            actions.move_to_element(profile_menu).click().perform()
-            time.sleep(1)
-            
-            # 2. Hover "Pilih Merchant Lain"
-            try:
-                switch_trigger = wait.until(EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'Pilih Merchant Lain') or contains(text(), 'Switch Merchant')]")))
-                actions.move_to_element(switch_trigger).perform()
-                time.sleep(1)
-            except:
-                # If hover fails, try JS click as fallback
-                driver.execute_script("""
-                    var spans = document.querySelectorAll('span, p, div');
-                    for (var s of spans) {
-                        if (s.innerText.includes('Pilih Merchant Lain') || s.innerText.includes('Switch Merchant')) {
-                            s.click();
-                            break;
+
+        # Normalize target name: trailing underscores in Sheets = trailing spaces in Shopee UI
+        # Build a list of name variants to try (exact → stripped underscore → partial)
+        target_normalized = target_name.rstrip("_").strip()
+        target_variants = list(dict.fromkeys([
+            target_name.lower().strip(),
+            target_normalized.lower(),
+            target_name.lower().replace("_", " ").strip(),
+        ]))
+        log.debug(f"  🔍 Name variants to try: {target_variants}")
+
+        # JS script: tries all name variants, also scrolls list to reveal off-screen items
+        js_switch_script = """
+            var variants  = arguments[0];   // list of lowercase name strings to try
+            var container = document.querySelector(
+                '.ant-dropdown-menu, .ant-menu-submenu-popup ul, [class*="merchant-list"], [class*="submenu"]'
+            );
+
+            function tryClick(items) {
+                // Pass 1: exact match
+                for (var v of variants) {
+                    for (var el of items) {
+                        var txt = (el.innerText || "").toLowerCase().trim();
+                        if (txt === v && el.getBoundingClientRect().height > 0) {
+                            el.scrollIntoView({block: 'center'});
+                            el.click();
+                            return true;
                         }
                     }
-                """)
-                time.sleep(1)
-        except Exception as e:
-            log.warning(f"  ⚠️ Failed to trigger merchant menu: {e}")
-            return False
+                }
+                // Pass 2: includes
+                for (var v of variants) {
+                    for (var el of items) {
+                        var txt = (el.innerText || "").toLowerCase().trim();
+                        if (txt.includes(v) && el.getBoundingClientRect().height > 0) {
+                            el.scrollIntoView({block: 'center'});
+                            el.click();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
 
-        # Use JS to click the target merchant in the revealed list
-        js_switch_script = """
-            var targetName = arguments[0].toLowerCase().trim();
-            var items = document.querySelectorAll('li.ant-menu-item, li[role="menuitem"], .ant-dropdown-menu-item, [class*="menu-item"]');
-            for (var i = 0; i < items.length; i++) {
-                var text = (items[i].innerText || "").toLowerCase().trim();
-                if (text === targetName || text.includes(targetName)) {
-                    items[i].click();
-                    return true;
+            var items = Array.from(document.querySelectorAll(
+                'li.ant-menu-item, li[role="menuitem"], .ant-dropdown-menu-item, [class*="menu-item"]'
+            ));
+            if (tryClick(items)) return true;
+
+            // Scroll the container and retry (for long merchant lists)
+            if (container) {
+                for (var step = 0; step < 5; step++) {
+                    container.scrollTop += 200;
+                    items = Array.from(document.querySelectorAll(
+                        'li.ant-menu-item, li[role="menuitem"], .ant-dropdown-menu-item, [class*="menu-item"]'
+                    ));
+                    if (tryClick(items)) return true;
                 }
             }
             return false;
         """
-        
-        if driver.execute_script(js_switch_script, target_name):
-            log.debug(f"  ✅ Clicked {target_name} in menu.")
-        else:
-            log.warning(f"  ⚠️ Could not find {target_name} in the list. Will retry...")
+
+        success = False
+        actions = ActionChains(driver)
+
+        for attempt in range(5):
+            # Re-open the dropdown on every attempt (submenu may have closed)
+            try:
+                profile_menu = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".merchantName")))
+                actions.move_to_element(profile_menu).click().perform()
+                time.sleep(0.8)
+
+                # Use ActionChains hover on "Pilih Merchant Lain" → keeps hover-submenu open
+                switch_trigger = None
+                try:
+                    switch_trigger = WebDriverWait(driver, 4).until(
+                        EC.presence_of_element_located((By.XPATH,
+                            "//span[contains(text(),'Pilih Merchant Lain') or contains(text(),'Switch Merchant')]"
+                            "|//li[contains(.,'Pilih Merchant Lain') or contains(.,'Switch Merchant')]"
+                        ))
+                    )
+                    actions.move_to_element(switch_trigger).perform()
+                except Exception:
+                    # Fallback: JS trigger
+                    driver.execute_script("""
+                        for (var el of document.querySelectorAll('span, li, div')) {
+                            if (/Pilih Merchant Lain|Switch Merchant/i.test(el.innerText)) {
+                                el.dispatchEvent(new MouseEvent('mouseenter',{bubbles:true}));
+                                el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+                                el.click(); break;
+                            }
+                        }
+                    """)
+
+                # Wait for submenu items to render (up to 2s)
+                time.sleep(2)
+
+                if driver.execute_script(js_switch_script, target_variants):
+                    log.debug(f"  ✅ Clicked merchant in menu (attempt {attempt+1}).")
+                    success = True
+                    break
+
+                log.debug(f"  ⏳ Merchant not found in dropdown (attempt {attempt+1}/5). Retrying...")
+                time.sleep(1)
+
+            except Exception as e:
+                log.debug(f"  ⚠️ Attempt {attempt+1} error: {e}")
+                time.sleep(1)
+
+        if not success:
+            log.warning(f"  ⚠️ Could not find '{target_name}' in menu after 5 attempts.")
             return False
 
-        # Wait to see if we redirect to onboarding
+        # Wait for redirect or onboarding
         time.sleep(3)
-        current_url = driver.current_url.lower()
-        if "onboarding" in current_url:
-            log.info("📍 [MERCHANT] Onboarding page detected. Accepting invitation...")
+        if "onboarding" in driver.current_url:
             try:
-                # Wait for "Gabung dengan Merchant" button
-                btn_xpath = "//button[contains(., 'Gabung dengan Merchant')]"
-                onboard_btn = WebDriverWait(driver, 15).until(
-                    EC.element_to_be_clickable((By.XPATH, btn_xpath))
-                )
+                onboard_btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Gabung dengan Merchant')]")))
                 onboard_btn.click()
                 log.info("  👉 Clicked 'Gabung dengan Merchant' button.")
                 time.sleep(5)
@@ -1104,15 +1156,15 @@ def auto_switch_merchant(driver, target_name):
         # Wait for the merchant name in the header to actually update
         try:
             wait.until(lambda d: "/food/dashboard" in d.current_url)
-            wait.until(lambda d: target_name.lower() in d.find_element(By.CSS_SELECTOR, ".merchantName").text.lower())
+            wait.until(lambda d: (
+                target_name.lower() in d.find_element(By.CSS_SELECTOR, ".merchantName").text.lower()
+                or target_normalized.lower() in d.find_element(By.CSS_SELECTOR, ".merchantName").text.lower()
+            ))
             log.info(f"✅ [MERCHANT] Switched to: {target_name}")
             return True
         except:
             log.warning(f"❌ [MERCHANT] UI name did not update to {target_name} in 15s.")
             return False
-    except Exception as e:
-        log.error(f"❌ Auto-switch failed: {e}")
-        return False
     except Exception as e:
         log.error(f"❌ Auto-switch failed: {e}")
         return False

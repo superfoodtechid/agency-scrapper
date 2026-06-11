@@ -4,6 +4,15 @@ Pipeline otomatis untuk mengunduh dan mengolah laporan transaksi mingguan dari p
 
 ---
 
+## 🆕 Recent Updates (Juni 2026)
+- **Parallel Polling (Shopee Batching)**: Phase 2 (menunggu dan mengunduh laporan) sekarang berjalan secara paralel menggunakan `ThreadPoolExecutor`. Total waktu eksekusi Phase 2 untuk puluhan merchant turun drastis dari ~7 menit menjadi ~1-2 menit.
+- **Robust Merchant Switching**:
+  - Penanganan _Hover-submenu_ (Ant Design) pada "Pilih Merchant Lain" yang lebih stabil menggunakan `ActionChains`.
+  - Normalisasi nama merchant otomatis (mengabaikan spasi dan *trailing underscore* seperti `Merchant_`).
+  - *Auto-scroll* untuk menemukan merchant yang berada di luar layar pada *dropdown* panjang.
+- **Gitignore Optimizations**: Menambahkan rule untuk mengabaikan direktori _bloat/cache_ pada profil Chrome (seperti `Cache/`, `Code Cache/`, `Crashpad/`) namun tetap mempertahankan *session login* (`Default` profile) agar mudah dipindahkan antar perangkat tanpa login ulang (OTP).
+
+---
 ## 📁 Struktur Proyek
 
 ```

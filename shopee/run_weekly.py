@@ -1,12 +1,14 @@
 import os
 import time
 import json
+import threading
 import pandas as pd
 import sys
 # Add parent directory (weekly/) to sys.path so core/ imports work
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 import requests
 
@@ -112,6 +114,94 @@ def download_file(url, filename, cookies=None, max_retries=3):
             else:
                 log.error(f"❌ Failed to download {filename} after {max_retries} attempts: {e}")
     return False
+
+
+# ── Parallel Polling Helper ───────────────────────────────────────────────────
+
+_download_lock = threading.Lock()  # Ensure thread-safe file path deduplication
+
+def _poll_and_download_merchant(m_name, ctx, report_dir, global_ranges, poll_timeout=1800):
+    """
+    Polls and downloads exported reports for a single merchant.
+    Designed to be run concurrently inside a ThreadPoolExecutor.
+
+    Returns:
+        (m_name: str, downloaded: list[tuple[path, label]], error: bool)
+    """
+    from core.client import ShopeeClient
+    from core.logger import get_logger
+    log = get_logger("omzet_pipeline")
+
+    client = ShopeeClient(
+        tob_token=ctx["tob_token"],
+        entity_id=ctx["entity_id"],
+        extra_cookies=ctx["cookies"]
+    )
+    downloaded = []
+    start_poll = time.time()
+    consecutive_errors = 0
+    poll_round = 0
+
+    while len(downloaded) < len(global_ranges) and (time.time() - start_poll) < poll_timeout:
+        poll_round += 1
+        reports = client.get_report_list()
+
+        if reports is None:  # Network error
+            consecutive_errors += 1
+            wait = min(10 * (2 ** (consecutive_errors - 1)), 60)
+            log.warning(f"  🌐 [THREAD] {m_name}: network error, retrying in {wait}s...")
+            time.sleep(wait)
+            continue
+
+        consecutive_errors = 0
+        found_new = False
+
+        for rep in reports:
+            if rep.get("status") not in [2, 3] or not rep.get("download_url"):
+                continue
+            if not rep.get("create_time", 0) or rep["create_time"] < ctx["start_trigger_time"]:
+                continue
+
+            report_name = rep.get("name", f"report_{rep.get('id')}.xlsx")
+            base_path = os.path.join(report_dir, f"{m_name.replace(' ', '_')}_{report_name}")
+
+            # Thread-safe path deduplication
+            with _download_lock:
+                target_path = base_path
+                version = 1
+                while os.path.exists(target_path):
+                    version += 1
+                    name_part, ext_part = os.path.splitext(base_path)
+                    target_path = f"{name_part}-{version:02d}{ext_part}"
+                # Create a placeholder so other threads don't pick the same path
+                open(target_path, 'wb').close()
+
+            already = [d[0] for d in downloaded]
+            if target_path in already:
+                try: os.unlink(target_path)
+                except: pass
+                continue
+
+            if download_file(rep.get("download_url"), target_path):
+                log.info(f"  ✅ [DOWNLOAD] {m_name} → {report_name}")
+                downloaded.append((target_path, report_name))
+                found_new = True
+            else:
+                # Remove placeholder on failed download
+                try: os.unlink(target_path)
+                except: pass
+
+        if not found_new and poll_round % 6 == 0:  # log every ~30s
+            elapsed = int(time.time() - start_poll)
+            log.info(f"  ⏳ [THREAD] {m_name}: waiting... ({len(downloaded)}/{len(global_ranges)} ready, {elapsed}s elapsed)")
+
+        if len(downloaded) < len(global_ranges):
+            time.sleep(5)  # Per-merchant poll interval: 5s (vs old 10s shared across all)
+
+    if len(downloaded) < len(global_ranges):
+        log.warning(f"  ⏰ [THREAD] {m_name}: timeout — {len(downloaded)}/{len(global_ranges)} files downloaded.")
+
+    return m_name, downloaded
 
 
 def run_pipeline():
@@ -331,70 +421,32 @@ def run_pipeline():
                         log.error(f"  ❌ Failed to trigger export for {merchant_name} range {r.get('label')}")
                     time.sleep(1)
 
-            # ── 3. Phase 2: Global Polling & Download ──────────────────────────
-            log.info(f"⏳ [PROGRESS] PHASE 2: Global Polling for all reports...")
+            # ── 3. Phase 2: Parallel Polling & Download ─────────────────────────
+            n_workers = min(8, len(merchants_context))  # Cap at 8 concurrent threads
+            log.info(f"⏳ [PROGRESS] PHASE 2: Parallel polling {len(merchants_context)} merchants ({n_workers} threads)...")
             os.makedirs(report_dir, exist_ok=True)
-        
-            total_expected = len(merchants_context) * len(global_ranges)
-            download_count = 0
-            start_poll = time.time()
-        
-            consecutive_network_errors = 0
-            poll_iteration = 0
-            while download_count < total_expected and (time.time() - start_poll) < 1800: # Increased timeout to 30m
-                found_new = False
-                poll_iteration += 1
-                has_network_issue = False
-            
-                for m_name, ctx in merchants_context.items():
-                    if len(ctx["downloaded"]) >= len(global_ranges): continue
-                
-                    client = ShopeeClient(tob_token=ctx["tob_token"], entity_id=ctx["entity_id"], extra_cookies=ctx["cookies"])
-                    reports = client.get_report_list()
-                
-                    if reports is None: # Network/Connection Error
-                        has_network_issue = True
-                        continue
-                    
-                    consecutive_network_errors = 0 # Reset on any successful API response
-                
-                    for rep in reports:
-                        # Match: status ready (2 or 3), has download URL, created after our trigger
-                        if rep.get("status") in [2, 3] and rep.get("download_url"):
-                            if rep.get("create_time", 0) and rep["create_time"] >= ctx["start_trigger_time"]:
-                                # Use report name for file naming (e.g. "Transactions_01022026_28022026_ShopeeFood.xlsx")
-                                report_name = rep.get("name", f"report_{rep.get('id')}.xlsx")
-                                base_target_path = os.path.join(report_dir, f"{m_name.replace(' ', '_')}_{report_name}")
-                                target_path = base_target_path
-                                version = 1
-                                while os.path.exists(target_path):
-                                    version += 1
-                                    name_part, ext_part = os.path.splitext(base_target_path)
-                                    target_path = f"{name_part}-{version:02d}{ext_part}"
-                            
-                                if target_path not in [d[0] for d in ctx["downloaded"]]:
-                                    if download_file(rep.get("download_url"), target_path):
-                                        log.info(f"  ✅ [DOWNLOAD] SUCCESS: {m_name} -> {report_name}")
-                                        ctx["downloaded"].append((target_path, report_name))
-                                        download_count += 1
-                                        found_new = True
-                
-                    # Log progress every 3 iterations (~30 seconds)
-                    if not found_new and poll_iteration % 3 == 0:
-                         log.info(f"  ⏳ [PROGRESS] Waiting for {m_name}... ({len(ctx['downloaded'])}/{len(global_ranges)} ready)")
-            
-                if has_network_issue:
-                    consecutive_network_errors += 1
-                    wait_time = min(10 * (2 ** (consecutive_network_errors - 1)), 60) # Exp backoff: 10, 20, 40, 60s
-                    log.warning(f"🌐 [NETWORK] API connection issues detected. Waiting {wait_time}s before next poll...")
-                    time.sleep(wait_time)
-                elif download_count < total_expected:
-                    time.sleep(10)
+
+            with ThreadPoolExecutor(max_workers=n_workers) as executor:
+                futures = {
+                    executor.submit(
+                        _poll_and_download_merchant,
+                        m_name, ctx, report_dir, global_ranges
+                    ): m_name
+                    for m_name, ctx in merchants_context.items()
+                }
+                for future in as_completed(futures):
+                    m_name_done = futures[future]
+                    try:
+                        _, downloaded_files = future.result()
+                        merchants_context[m_name_done]["downloaded"] = downloaded_files
+                        log.info(f"  ✔ [BATCH] {m_name_done}: {len(downloaded_files)}/{len(global_ranges)} files")
+                    except Exception as exc:
+                        log.error(f"  ❌ [BATCH] {m_name_done} thread raised: {exc}")
 
             # ── Summary ──────────────────────────────────────────────────────────
             log.info("📋 [PROGRESS] Download Phase Complete. Summary:")
             for m_name, ctx in merchants_context.items():
-                if len(ctx['downloaded']) < len(global_ranges):
+                if len(ctx["downloaded"]) < len(global_ranges):
                     if m_name not in failed_merchants:
                         failed_merchants.append(m_name)
                 log.info(f"  🏪 {m_name}: {len(ctx['downloaded'])}/{len(global_ranges)} files")
