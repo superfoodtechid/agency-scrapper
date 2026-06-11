@@ -642,6 +642,23 @@ def _trigger_and_extract_tokens(driver) -> tuple:
 
 # ── Driver Initialization ──────────────────────────────────────────────────────
 
+def _get_platform_tag() -> str:
+    """Returns a short platform identifier for OS-specific Chrome profiles.
+    
+    Chrome profile SQLite databases use OS-specific file locking mechanisms
+    (fcntl on Linux vs LockFileEx on Windows). Sharing profiles across OSes
+    causes corruption and forces fresh logins. This tag ensures each OS
+    uses its own isolated profile directory.
+    """
+    import platform
+    system = platform.system().lower()
+    if system == "windows":
+        return "win"
+    elif system == "darwin":
+        return "mac"
+    else:
+        return "linux"
+
 def _init_driver(headless: bool):
     options = Options()
     options.add_argument("--log-level=3")
@@ -656,16 +673,19 @@ def _init_driver(headless: bool):
     else:
         options.add_argument("--start-maximized")
     
+    platform_tag = _get_platform_tag()
     script_dir = Path(__file__).parent.parent
     if SESSION_FILE.stem == "session":
-        profile_dir = script_dir / "data" / "chrome_profile"
+        profile_dir = script_dir / "data" / f"chrome_profile_{platform_tag}"
         options.add_argument(f"--user-data-dir={profile_dir.resolve()}")
         options.add_argument("--profile-directory=shopee_profile")
     else:
         account_name = SESSION_FILE.stem.replace("session_", "")
-        profile_dir = script_dir / "data" / f"chrome_profile_{account_name}"
+        profile_dir = script_dir / "data" / f"chrome_profile_{account_name}_{platform_tag}"
         options.add_argument(f"--user-data-dir={profile_dir.resolve()}")
         options.add_argument(f"--profile-directory=profile_{account_name}")
+
+    log.info(f"📂 [PROFILE] Using Chrome profile: {profile_dir.resolve()} (platform: {platform_tag})")
 
     # Delete SingletonLock if it exists to avoid SessionNotCreatedException on Linux
     singleton_lock = profile_dir / "SingletonLock"
@@ -675,6 +695,16 @@ def _init_driver(headless: bool):
             log.info(f"🧹 Removed Chrome SingletonLock at {singleton_lock}")
         except Exception as e:
             log.warning(f"⚠️ Failed to remove SingletonLock: {e}")
+    
+    # On Windows, also clean up stale lockfile to prevent "profile in use" errors
+    if platform_tag == "win":
+        lockfile = profile_dir / "lockfile"
+        if lockfile.exists():
+            try:
+                lockfile.unlink(missing_ok=True)
+                log.info(f"🧹 Removed Chrome lockfile at {lockfile}")
+            except Exception as e:
+                log.warning(f"⚠️ Failed to remove lockfile: {e}")
 
     try:
         # Use native Selenium Manager (faster, more stable, avoids ChromeDriverManager network hangs)
