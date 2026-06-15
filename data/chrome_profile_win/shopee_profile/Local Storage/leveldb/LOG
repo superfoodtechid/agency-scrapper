@@ -1,21 +1,9 @@
-2026/06/11-16:16:14.289 4188 Reusing MANIFEST C:\Users\DELL\Downloads\SF\agency\data\chrome_profile_win\shopee_profile\Local Storage\leveldb/MANIFEST-000001
-2026/06/11-16:16:14.301 4188 Recovering log #102
-2026/06/11-16:16:14.306 4188 Reusing old log C:\Users\DELL\Downloads\SF\agency\data\chrome_profile_win\shopee_profile\Local Storage\leveldb/000102.log 
-2026/06/11-16:19:14.782 3d0c Level-0 table #105: started
-2026/06/11-16:19:14.787 3d0c Level-0 table #105: 12857 bytes OK
-2026/06/11-16:19:14.789 3d0c Delete type=0 #102
-2026/06/11-16:22:14.785 3d0c Level-0 table #107: started
-2026/06/11-16:22:14.790 3d0c Level-0 table #107: 11754 bytes OK
-2026/06/11-16:22:14.793 3d0c Delete type=0 #104
-2026/06/11-16:22:14.794 3d0c Compacting 4@0 + 1@1 files
-2026/06/11-16:22:14.802 3d0c Generated table #108@0: 2417 keys, 40992 bytes
-2026/06/11-16:22:14.802 3d0c Compacted 4@0 + 1@1 files => 40992 bytes
-2026/06/11-16:22:14.803 3d0c compacted to: files[ 0 1 1 0 0 0 0 ]
-2026/06/11-16:22:14.804 3d0c Delete type=2 #97
-2026/06/11-16:22:14.804 3d0c Delete type=2 #99
-2026/06/11-16:22:14.804 3d0c Delete type=2 #101
-2026/06/11-16:22:14.804 3d0c Delete type=2 #105
-2026/06/11-16:22:14.804 3d0c Delete type=2 #107
-2026/06/11-16:53:13.923 3d0c Level-0 table #110: started
-2026/06/11-16:53:13.931 3d0c Level-0 table #110: 10903 bytes OK
-2026/06/11-16:53:13.934 3d0c Delete type=0 #106
+2026/06/15-16:58:30.433 45ac Reusing MANIFEST C:\Users\DELL\Downloads\agency\data\chrome_profile_win\shopee_profile\Local Storage\leveldb/MANIFEST-000001
+2026/06/15-16:58:30.442 45ac Recovering log #109
+2026/06/15-16:58:30.444 45ac Reusing old log C:\Users\DELL\Downloads\agency\data\chrome_profile_win\shopee_profile\Local Storage\leveldb/000109.log 
+2026/06/15-17:01:30.939 ae8 Level-0 table #113: started
+2026/06/15-17:01:30.946 ae8 Level-0 table #113: 17246 bytes OK
+2026/06/15-17:01:30.949 ae8 Delete type=0 #109
+2026/06/15-17:07:30.940 ae8 Level-0 table #115: started
+2026/06/15-17:07:30.945 ae8 Level-0 table #115: 17477 bytes OK
+2026/06/15-17:07:30.947 ae8 Delete type=0 #112
