@@ -42,7 +42,11 @@ import sys
 import threading
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
-from discord_notifier import send_discord_error
+try:
+    from discord_notifier import send_discord_error
+except ImportError:
+    def send_discord_error(*args, **kwargs):
+        pass
 
 _thread_local = threading.local()
 
@@ -707,6 +711,25 @@ def _trigger_and_extract_tokens(driver) -> tuple:
 
 # ── Driver Initialization ──────────────────────────────────────────────────────
 
+def _kill_zombie_chrome_processes(profile_dir: Path):
+    """Kills any running Chrome/ChromeDriver processes using the specified profile directory."""
+    if os.name == "nt":
+        try:
+            import subprocess
+            abs_path = str(profile_dir.resolve())
+            ps_cmd = f"Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe' OR Name = 'chromedriver.exe'\" | Where-Object {{ $_.CommandLine -like '*{abs_path}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            log.warning(f"⚠️ Failed to kill zombie chrome processes: {e}")
+    else:
+        try:
+            import subprocess
+            abs_path = str(profile_dir.resolve())
+            cmd = f"pkill -9 -f '{abs_path}'"
+            subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
 def _init_driver(headless: bool):
     options = Options()
     options.add_argument("--log-level=3")
@@ -724,15 +747,19 @@ def _init_driver(headless: bool):
         options.add_argument("--start-maximized")
     
     script_dir = Path(__file__).parent.parent
+    suffix = "_win" if os.name == "nt" else ""
     if SESSION_FILE.stem == "session":
-        profile_dir = script_dir / "data" / "chrome_profile"
+        profile_dir = script_dir / "data" / f"chrome_profile{suffix}"
         options.add_argument(f"--user-data-dir={profile_dir.resolve()}")
         options.add_argument("--profile-directory=shopee_profile")
     else:
         account_name = SESSION_FILE.stem.replace("session_", "")
-        profile_dir = script_dir / "data" / f"chrome_profile_{account_name}"
+        profile_dir = script_dir / "data" / f"chrome_profile_{account_name}{suffix}"
         options.add_argument(f"--user-data-dir={profile_dir.resolve()}")
         options.add_argument(f"--profile-directory=profile_{account_name}")
+
+    # Terminate leftover chrome processes that lock the profile
+    _kill_zombie_chrome_processes(profile_dir)
 
     # Delete SingletonLock if it exists to avoid SessionNotCreatedException on Linux
     singleton_lock = profile_dir / "SingletonLock"
@@ -1090,15 +1117,18 @@ def auto_switch_merchant(driver, target_name, is_retry=False):
                 if switch_attempt == 2:
                     msg = f"Nama outlet '{target_name}' tidak terdaftar atau belum ditambahkan (invite) di akun Shopee ini."
                     log.error(f"❌ {msg}")
-                    # Mengirimkan error ke Discord secara langsung karena ini fatal dan kita akan langsung abort.
-                    send_discord_error(
-                        platform="Shopee", 
-                        merchant=target_name, 
-                        error_type="SYSTEM_ERROR", 
-                        message=msg
-                    )
-                    # Lempar error spesifik agar pipeline terluar menangkapnya
-                    raise ValueError(f"MERCHANT_NOT_FOUND: {target_name}")
+                    if is_retry:
+                        # Mengirimkan error ke Discord secara langsung karena ini fatal dan kita akan langsung abort.
+                        send_discord_error(
+                            platform="Shopee", 
+                            merchant=target_name, 
+                            error_type="SYSTEM_ERROR", 
+                            message=msg
+                        )
+                        # Lempar error spesifik agar pipeline terluar menangkapnya
+                        raise ValueError(f"MERCHANT_NOT_FOUND: {target_name}")
+                    else:
+                        return False
                 continue # Ulangi proses klik profil dan buka dropdown dari awal
 
             # Wait to see if we redirect to onboarding invitation page
@@ -1654,6 +1684,12 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
             
             # ── Step 5: Decision - Switch or Stay? ──
             do_switch = False
+            is_invalid_name = (
+                not active_name or
+                active_name.lower().strip() == "unknown merchant" or
+                active_name.lower().strip() == "admin"
+            )
+            
             if target_name:
                 if active_name.lower() != target_name.lower():
                     log.info(f"📍 [MERCHANT] Current: {active_name} | Target: {target_name}. Switching...")
@@ -1664,11 +1700,6 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
                 else:
                     log.info(f"✅ [MERCHANT] Already as target: {active_name}")
             else:
-                is_invalid_name = (
-                    not active_name or
-                    active_name.lower().strip() == "unknown merchant" or
-                    active_name.lower().strip() == "admin"
-                )
                 if active_id and active_id != "None" and not is_invalid_name:
                     log.info(f"📍 [MERCHANT] Current: {active_name} (ID: {active_id})")
                     do_switch = False
@@ -1677,29 +1708,8 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
                     do_switch = True
 
             if do_switch:
-                if target_name:
-                    success = auto_switch_merchant(driver, target_name, is_retry=(attempt == 2))
-                    if not success:
-                        log.warning(f"⚠️ [MERCHANT] auto_switch_merchant failed for target {target_name}. Initiating logout/relogin recovery...")
-                        recovered = _deliberate_logout_and_relogin(
-                            driver,
-                            username=username,
-                            password=password,
-                            phone=phone,
-                        )
-                        if recovered:
-                            log.info("🔄 [MERCHANT] Recovery successful. Retrying merchant switch...")
-                            success = auto_switch_merchant(driver, target_name, is_retry=(attempt == 2))
-                        else:
-                            log.error("❌ Recovery failed.")
-                            success = False
-                else:
-                    # When merchant cannot be detected, do a deliberate logout + relogin
-                    # via the Chrome profile. This gives a clean session state without OTP:
-                    #   1. Click profile → select 'Log Out' from dropdown
-                    #   2. Confirm logout
-                    #   3. Chrome profile auto-logs back in (no OTP)
-                    log.info("🔄 [MERCHANT] Unknown/Admin/Missing merchant — initiating logout/relogin recovery...")
+                if is_invalid_name:
+                    log.info("🔄 [MERCHANT] Unknown/Admin/Missing active merchant — initiating logout/relogin recovery...")
                     recovered = _deliberate_logout_and_relogin(
                         driver,
                         username=username,
@@ -1707,11 +1717,33 @@ def get_session(username=None, password=None, phone=None, headless=True, close_b
                         phone=phone,
                     )
                     if recovered:
-                        # After re-entry, run merchant selection normally
-                        success = _handle_merchant_selection(driver, active_id_forced=None, interactive=interactive)
+                        log.info("🔄 [MERCHANT] Recovery successful. Retrying merchant selection/switch...")
+                        if target_name:
+                            success = auto_switch_merchant(driver, target_name, is_retry=(attempt == 2))
+                        else:
+                            success = _handle_merchant_selection(driver, active_id_forced=None, interactive=interactive)
                     else:
                         log.error("❌ Logout/relogin recovery failed. Cannot proceed.")
                         success = False
+                else:
+                    if target_name:
+                        success = auto_switch_merchant(driver, target_name, is_retry=(attempt == 2))
+                        if not success:
+                            log.warning(f"⚠️ [MERCHANT] auto_switch_merchant failed for target {target_name}. Initiating logout/relogin recovery...")
+                            recovered = _deliberate_logout_and_relogin(
+                                driver,
+                                username=username,
+                                password=password,
+                                phone=phone,
+                            )
+                            if recovered:
+                                log.info("🔄 [MERCHANT] Recovery successful. Retrying merchant switch...")
+                                success = auto_switch_merchant(driver, target_name, is_retry=(attempt == 2))
+                            else:
+                                log.error("❌ Recovery failed.")
+                                success = False
+                    else:
+                        success = _handle_merchant_selection(driver, active_id_forced=None, interactive=interactive)
                 if not success:
                     log.error("❌ Merchant selection failed.")
                     driver.quit()
