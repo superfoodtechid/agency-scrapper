@@ -285,7 +285,6 @@ def run_pipeline():
         try:
             log.info("🔍 [DATA] Fetching 'allvbadmin' credentials from Google Sheets...")
             url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ3tLKBNXDqRgBw0mNhKZFxgvKx-JoiTDzm_s5Ix1cm7O6HCv4IvExOLR2HSRVaXSsx82V348mcr9X4/pub?gid=0&single=true&output=csv"
-            import time
             cache_buster = f"&t={int(time.time())}" if "?" in url else f"?t={int(time.time())}"
             df = pd.read_csv(url + cache_buster)
             mask = df.isin(["allvbadmin"]).any(axis=1)
@@ -420,6 +419,11 @@ def run_pipeline():
                     if not success:
                         log.error(f"  ❌ Failed to trigger export for {merchant_name} range {r.get('label')}")
                     time.sleep(1)
+
+                # Batching delay: 10 merchants per batch, with 1 minute (60s) delay between batches
+                if (i + 1) % 10 == 0 and (i + 1) < len(target_merchants):
+                    log.info(f"⏳ [BATCH] Batch limit reached ({i + 1} merchants processed). Delaying for 60 seconds before processing the next batch...")
+                    time.sleep(60)
 
             # ── 3. Phase 2: Parallel Polling & Download ─────────────────────────
             n_workers = min(8, len(merchants_context))  # Cap at 8 concurrent threads

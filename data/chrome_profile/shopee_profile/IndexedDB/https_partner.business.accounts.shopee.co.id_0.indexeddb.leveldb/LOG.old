@@ -1,0 +1,25 @@
+2026/06/08-11:40:49.868 d9f5 Reusing MANIFEST /home/akbarhann/project/task-weekly/weekly/data/chrome_profile/shopee_profile/IndexedDB/https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb/MANIFEST-000001
+2026/06/08-11:40:49.868 d9f5 Recovering log #82
+2026/06/08-11:40:49.870 d9f5 Reusing old log /home/akbarhann/project/task-weekly/weekly/data/chrome_profile/shopee_profile/IndexedDB/https_partner.business.accounts.shopee.co.id_0.indexeddb.leveldb/000082.log 
+2026/06/08-11:40:49.872 d9f5 Delete type=2 #80
+2026/06/08-11:40:49.892 d9f4 Level-0 table #87: started
+2026/06/08-11:40:49.894 d9f4 Level-0 table #87: 9726 bytes OK
+2026/06/08-11:40:49.896 d9f4 Delete type=0 #82
+2026/06/08-11:40:49.897 d9f4 Manual compaction at level-0 from '\x00\x1c\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x1d\x00\x00\x00' @ 0 : 0; will stop at '\x00\x1c\x00\x00\x05' @ 5489 : 1
+2026/06/08-11:40:49.897 d9f4 Compacting 1@0 + 1@1 files
+2026/06/08-11:40:49.900 d9f4 Generated table #88@0: 586 keys, 8204 bytes
+2026/06/08-11:40:49.900 d9f4 Compacted 1@0 + 1@1 files => 8204 bytes
+2026/06/08-11:40:49.901 d9f4 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/06/08-11:40:49.902 d9f6 Manual compaction at level-0 from '\x00\x1c\x00\x00\x05' @ 5489 : 1 .. '\x00\x1d\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/06/08-11:40:51.235 d9f4 Level-0 table #90: started
+2026/06/08-11:40:51.239 d9f4 Level-0 table #90: 4173 bytes OK
+2026/06/08-11:40:51.241 d9f4 Delete type=2 #84
+2026/06/08-11:40:51.241 d9f4 Delete type=0 #86
+2026/06/08-11:40:51.241 d9f4 Delete type=2 #87
+2026/06/08-11:40:51.242 d9f5 Manual compaction at level-0 from '\x00\x1d\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x1e\x00\x00\x00' @ 0 : 0; will stop at '\x00\x1d\x00\x00\x05' @ 5586 : 1
+2026/06/08-11:40:51.242 d9f5 Compacting 1@0 + 1@1 files
+2026/06/08-11:40:51.245 d9f5 Generated table #91@0: 590 keys, 9394 bytes
+2026/06/08-11:40:51.245 d9f5 Compacted 1@0 + 1@1 files => 9394 bytes
+2026/06/08-11:40:51.247 d9f5 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/06/08-11:40:51.247 d9f5 Delete type=2 #90
+2026/06/08-11:40:51.250 d9f4 Manual compaction at level-0 from '\x00\x1d\x00\x00\x05' @ 5586 : 1 .. '\x00\x1e\x00\x00\x00' @ 0 : 0; will stop at (end)
