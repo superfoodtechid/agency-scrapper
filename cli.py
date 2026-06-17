@@ -507,9 +507,12 @@ def main():
         platform = args.platform.lower()
         start_date = args.start
         end_date = args.end
-        outlet = [args.outlet] if args.outlet else []
-        branch = [args.branch] if args.branch else []
-        shopee_merchant = [_resolve_shopee_merchant(args.outlet, branch_name=args.branch)] if args.outlet else []
+        outlet = [x.strip() for x in args.outlet.split("|")] if args.outlet else []
+        branch = [x.strip() for x in args.branch.split("|")] if args.branch else []
+        shopee_merchant = []
+        if args.outlet:
+            for o in outlet:
+                shopee_merchant.append(_resolve_shopee_merchant(o, branch_name=args.branch))
         banner()
 
     start_date = normalize_date_string(start_date)
